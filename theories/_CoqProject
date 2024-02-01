@@ -1,0 +1,3 @@
+-R . project
+./commands.v
+./partial.v
