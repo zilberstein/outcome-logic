@@ -1,5 +1,5 @@
-Require Import commands.
 Require Import partial.
+Require Import commands.
 From Coq Require Import Ensembles.
 Require Import Coq.Relations.Relation_Definitions.
 
@@ -134,8 +134,7 @@ Proof.
   apply apply_f_union.
 Qed.
 
-Theorem powerset_preserve_bind2 : forall (A B : Type) (f : A -> (M Pe) B) 
-  (x : (M Pe) A), 
+Theorem powerset_preserve_bind2 : forall (A B : Type) (f : A -> (M Pe) B), 
   bind Pe (id Pe A) f = id Pe B.
 Proof.
   intros. simpl. apply apply_f_empty.
@@ -175,6 +174,16 @@ Proof.
     + easy.
 Qed. 
 
+
+Theorem powerset_preserve_bind3 : forall (A B : Type) (f g : A -> (M Pe) B) (x : (M Pe) A)
+(Hfg : forall (y : A), exec_partial Pe B (f y) (g y)),
+exists H,
+  ap (bop Pe B) (bind Pe x f) (bind Pe x g) H = 
+  bind Pe x (fun y => ap (bop Pe B) (f y) (g y) (Hfg y)).
+Proof.
+Admitted.
+
+
 (* Now, we have proved all the necessary theorems to prove that this is 
    indeed a valid execution model. *)
 
@@ -188,6 +197,7 @@ Definition powerset_exec_model_theory :=
     (* Preservation of monad bind*)
     preserve_bind1 := powerset_preserve_bind1;
     preserve_bind2 := powerset_preserve_bind2;
+    preserve_bind3 := powerset_preserve_bind3;
 
     (* Monad Laws *)
     bind_with_unit := powerset_bind_with_unit;
@@ -195,7 +205,7 @@ Definition powerset_exec_model_theory :=
     bind_composition := powerset_bind_composition;
   |}.
 
-(* First, a simple example using arithemetic and boolean expressions *)
+
 
 
 
