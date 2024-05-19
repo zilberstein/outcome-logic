@@ -1,8 +1,9 @@
-Require Import examples.
+Require Import powerset.
 Require Import partial.
 Require Import commands.
 From Coq Require Import Ensembles.
 From Coq Require Import Logic.FunctionalExtensionality.
+From Coq Require Import Logic.PropExtensionality.
 
 
 Definition assertion (Ex : exec_model_consts) := M Ex state -> Prop.
@@ -46,10 +47,38 @@ Definition OPlus (Ex : exec_model_consts) (P Q : assertion Ex) : assertion Ex :=
   ap (bop Ex state) m1 m2 H = m /\ P m1 /\ Q m2.
 
 Definition ImpliesOC (Ex : exec_model_consts) (P Q : assertion Ex) : assertion Ex :=
-  fun (m : M Ex state) => forall (m': M Ex state), m = m' -> P m' -> Q m'.
+  fun (m : M Ex state) => P m -> Q m.
 
 Definition AtomicAssn (Ex : exec_model_consts) (P : M Ex state -> Prop) : assertion Ex :=
   fun (m : M Ex state) => P m.
+
+Definition Existential (T : Type) (Ex : exec_model_consts) (U : Ensemble T) 
+  (P : T -> assertion Ex) : assertion Ex:=
+  fun m => exists x, U x /\ (P x) m.
+
+Definition Indicator (Ex : exec_model_consts) (m : M Ex state) : assertion Ex :=
+  fun m' => m = m'.
+
+Definition assn_subst (Ex : exec_model_consts) (e : vexp) (x : string) 
+  (P : assertion Ex) :=
+  fun (m : M Ex state) => P (bind Ex m (fun st => 
+  (let st' := fun x' => if String.eqb x x' then (veval st e) else (st x') in
+  unit Ex st'))).
+
+Definition entails_exp (Ex : exec_model_consts) (Ext : exec_model_theory Ex) 
+  (P : assertion Ex) (e : vexp) :=
+  forall (m : M Ex state), P m -> 
+    ceval_lifted Ex Ext (CAtom Ex (CAssume Ex e)) m = m.
+
+Definition entails_exp_neg (Ex : exec_model_consts) (Ext : exec_model_theory Ex) 
+  (P : assertion Ex) (e : vexp) :=
+  forall (m : M Ex state), P m -> 
+    ceval_lifted Ex Ext (CAtom Ex (CAssume Ex e)) m = id Ex state.
+
+Definition assume_backprop (Ex : exec_model_consts) (Ext : exec_model_theory Ex) 
+  (e : vexp) (P : assertion Ex) :=
+  fun (m : M Ex state) => P (ceval_lifted Ex Ext (CAtom Ex (CAssume Ex e)) m).
+
 
 (* Defining inference rules *)
 Inductive rule (Ex : exec_model_consts) (Ext : exec_model_theory Ex) :
@@ -75,25 +104,64 @@ Inductive rule (Ex : exec_model_consts) (Ext : exec_model_theory Ex) :
   | plus_rule_total : forall (P Q1 Q2 : assertion Ex) (c1 c2 : com Ex) (pf : is_total Ex),
                       rule Ex Ext P c1 Q1 -> rule Ex Ext P c2 Q2 ->
                       rule Ex Ext P (CPlus_total Ex c1 c2 pf) (OPlus Ex Q1 Q2)
-  | plus_rule : forall (P Q1 Q2 : assertion Ex) (e1 e2 : vexp) (c1 c2 : com Ex)
-                  (pf : compatible e1 e2),
+  | plus_rule : forall (e1 e2 : vexp) (c1 c2 : com Ex) (pf : compatible e1 e2)
+                  (P Q1 Q2 : assertion Ex),
                   rule Ex Ext P (CSeq Ex (CAssume Ex e1) c1) Q1 -> 
                   rule Ex Ext P (CSeq Ex (CAssume Ex e2) c2) Q2 ->
-                  rule Ex Ext P (CPlus Ex e1 e2 c1 c2 pf) (OPlus Ex Q1 Q2).
+                  rule Ex Ext P (CPlus Ex e1 e2 c1 c2 pf) (OPlus Ex Q1 Q2)
+  | exists_rule : forall (T : Type) (U : Ensemble T) (P Q : T -> assertion Ex)
+                  (C : com Ex),
+                  (forall (t : T), U t -> rule Ex Ext (P t) C (Q t)) ->
+                  rule Ex Ext (Existential T Ex U P) C (Existential T Ex U Q)
+  | assgn_rule : forall (e : vexp) (x : string) (P : assertion Ex),
+                  rule Ex Ext (assn_subst Ex e x P) (CAtom Ex (CAsgn Ex x e)) P
+  | assume_rule : forall (e : vexp) (P : assertion Ex),
+                  rule Ex Ext (assume_backprop Ex Ext e P) (CAtom Ex (CAssume Ex e)) P.
 
+Theorem old_rule : forall (Ex : exec_model_consts) (Ext : exec_model_theory Ex)
+  (e : vexp) (P Q : assertion Ex),
+  entails_exp Ex Ext P e ->
+  entails_exp_neg Ex Ext Q e ->
+  rule Ex Ext (OPlus Ex P Q) (CAtom Ex (CAssume Ex e)) P.
+Proof.
+  intros. 
+  assert (forall m, (OPlus Ex P Q) m -> (assume_backprop Ex Ext e P) m).
+    { intros. unfold OPlus in H1. inversion H1 as [m1 [m2 [pf [H2 [H3 H4]]]]].
+      rewrite <- H2. unfold assume_backprop. unfold ceval_lifted.
+      specialize (preserve_bind1 Ex Ext state state (ceval Ex Ext (CAssume Ex e)) m1 m2 pf).
+      intros. inversion H5. rewrite H6.
+      
+      remember (ap (bop Ex state) (bind Ex m1 (ceval Ex Ext (CAssume Ex e)))
+        (bind Ex m2 (ceval Ex Ext (CAssume Ex e))) x) as sum.
+
+      assert (sum = m1).
+        { remember (bind Ex m1 (ceval Ex Ext (CAssume Ex e))) as m1_assume.
+          remember (bind Ex m2 (ceval Ex Ext (CAssume Ex e))) as m2_assume.
+          apply H in H3. unfold ceval_lifted in H3.
+          apply H0 in H4. unfold ceval_lifted in H4.
+          rewrite H3 in Heqm1_assume. rewrite H4 in Heqm2_assume. 
+          subst. specialize (pcm_id Ex Ext state m1). intros. inversion H2.
+          rewrite <- H7. apply partial_proof_irrelevance. }
+
+      rewrite H7. apply H3.
+    }
+  specialize (consequence_rule Ex Ext (OPlus Ex P Q) 
+    (assume_backprop Ex Ext e P) P P (CAssume Ex e)). intros. apply H2.
+  - intros. unfold ImpliesOC. apply H1.
+  - apply assume_rule.
+  - intros. unfold ImpliesOC. easy.
+Qed.
+
+(* Original rule: 
+  | assume_rule : forall (e : vexp) (P Q : assertion Ex),
+                  entails_exp Ex Ext P e ->
+                  entails_exp_neg Ex Ext Q e ->
+                  rule Ex Ext (OPlus Ex P Q) (CAtom Ex (CAssume Ex e)) P *)
 
 (*---------------- Soundness of Inference Rules ----------------*)
 (* We now begin proving the soundness of Outcome Logic. To begin,
    we show that the conclusion of every inference rule is a valid
    outcome triple given the premises and vice versa. *)
-
-(* Lemma assume_to_plus : forall (Ex : exec_model_consts) (Ext : exec_model_theory Ex)
-  (e1 e2 : vexp) (c1 c2 : com Ex) (m : M Ex state) (pf : compatible e1 e2) {H},
-  ap (bop Ex state) (bind Ex m (ceval Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e1)) c1)))
-  (bind Ex m (ceval Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e1)) c1))) H = 
-  bind Ex m (ceval Ex Ext (CPlus Ex e1 e2 c1 c2 pf)).
-Proof.
-  intros.  *)
 
 Lemma compatible_addition_defined : forall (Ex : exec_model_consts)
   (Ext : exec_model_theory Ex) (e1 e2 : vexp) (c1 c2 : com Ex)
@@ -132,9 +200,8 @@ Proof.
   - unfold T_plus in *. rewrite H. rewrite (preserve_bind2 Ex Ext) ; easy.
   - unfold Top. easy.
   - unfold Bot in H. easy.
-  - unfold ImpliesOC in *. apply H with (m := m) in H2. apply IHrule in H2. 
+  - unfold ImpliesOC in *. apply H  in H2. apply IHrule in H2. 
     apply H1 with (m := bind Ex m (ceval Ex Ext c)) in H2. apply H2. 
-    reflexivity. reflexivity.
   - unfold OPlus. assert (Q2 (bind Ex m (ceval Ex Ext c2))). 
       { apply IHrule2. apply H1. } apply IHrule1 in H1. 
     remember (ceval_lifted Ex Ext c1 m) as m1. 
@@ -175,6 +242,325 @@ Proof.
     { apply functional_extensionality. intros. apply compatible_ceval_plus_rev. }
 
     rewrite H5. simpl. reflexivity.
+  - inversion H1. unfold Existential. exists x. destruct H2. split. apply H2.
+    apply H0. apply H2. apply H3.
+  - apply H.
+  - unfold assume_backprop in H. apply H.
+Qed.
+  
+  
+  
+  (* unfold OPlus in H. inversion H1. inversion H2. inversion H3. clear H1 H2 H3.
+    destruct H4. destruct H2. rewrite <- H1. 
+    specialize (preserve_bind1 Ex Ext state state 
+      (ceval Ex Ext (CAtom Ex (CAssume Ex e))) x x0 x1). intros. inversion H4.
+    clear H4. simpl in H5. rewrite H5. clear H5.
+    unfold entails_exp in H. unfold entails_exp_neg in H0. 
+    specialize (H x H2). specialize (H0 x0 H3).
+    remember (ceval_lifted Ex Ext (CAssume Ex e) x) as m1.
+    remember (ceval_lifted Ex Ext (CAssume Ex e) x0) as m2. 
+    unfold ceval_lifted in Heqm1. simpl in Heqm1.
+    unfold ceval_lifted in Heqm2. simpl in Heqm2.
+    assert (exec_partial Ex state m1 m2).
+      { subst. apply x2. }
+    assert ((ap (bop Ex state)
+      (bind Ex x
+        (fun st : state =>
+          match veval st e with
+          | Aval _ => unit Ex st
+          | Bval b => if b then unit Ex st else id Ex state
+          end))
+      (bind Ex x0
+        (fun st : state =>
+          match veval st e with
+          | Aval _ => unit Ex st
+          | Bval b => if b then unit Ex st else id Ex state
+          end)) x2) = 
+        ap (bop Ex state) m1 m2 H4).
+      { subst. apply partial_proof_irrelevance. }
+    rewrite H5. assert (exec_partial Ex state x (id Ex state)).
+      { rewrite <- H0. rewrite <- H. apply H4. }
+    assert (ap (bop Ex state) m1 m2 H4 = ap (bop Ex state) x (id Ex state) H6).
+      { clear Heqm2. clear Heqm1. subst. apply partial_proof_irrelevance. }
+    rewrite H7. specialize (pcm_id Ex Ext state x). intros. inversion H8.
+    specialize (partial_proof_irrelevance Ex state x (id Ex state) H6 x3).
+    intros. rewrite H10. rewrite H9. easy.
+Qed. *)
+
+
+(*---------------- Completeness of Outcome Logic ----------------*)
+(* We now begin proving the completeness of Outcome Logic. To begin,
+   we first define the strongest postcondition. We then prove a lemma
+   involving this definition. Completeness then follows almost immediately
+   from this lemma. *)
+
+Definition post (Ex : exec_model_consts) (Ext : exec_model_theory Ex) (C : com Ex)
+  (P : assertion Ex) : assertion Ex :=
+   fun x => exists m, P m /\ (ceval_lifted Ex Ext C m) = x.
+
+Lemma useless_lambda : forall (A B : Type) (f : A -> B),
+  (fun a => f a) = f.
+Proof.
+  intros. reflexivity.
+Qed.
+
+Lemma total_post_existential : forall (Ex : exec_model_consts) 
+  (Ext : exec_model_theory Ex) (C1 C2 : com Ex) (P : assertion Ex) (pf : is_total Ex),
+  (post Ex Ext <{ pf -> C1 [+Ex] C2 }> P) = 
+  (Existential (M Ex state) Ex P 
+  (fun t => OPlus Ex 
+      (post Ex Ext C1 (Indicator Ex t)) (post Ex Ext C2 (Indicator Ex t)))).
+Proof.
+  intros. unfold post. apply functional_extensionality. intros. 
+  apply propositional_extensionality. 
+  assert (forall x0, exists H, ap (bop Ex state) (ceval_lifted Ex Ext C1 x0) 
+    (ceval_lifted Ex Ext C2 x0) H =
+    bind Ex x0 (fun st : state =>
+    ap (bop Ex state) (ceval Ex Ext C1 st) (ceval Ex Ext C2 st)
+      (commands.ceval_obligation_1 ceval Ex Ext st C1 C2 pf))). 
+    { intros. apply (preserve_bind3 Ex Ext). } split.
+  - intros. unfold Existential. inversion H0. destruct H1. exists x0.
+    split. apply H1. unfold OPlus. 
+    exists (ceval_lifted Ex Ext C1 x0). 
+    exists (ceval_lifted Ex Ext C2 x0).
+    unfold ceval_lifted. simpl. specialize (H x0). inversion H. exists x1.  
+    unfold ceval_lifted in H3. rewrite H3. split. rewrite <- H2. reflexivity. 
+    split ; unfold post ; unfold Indicator ; exists x0 ; easy.
+  - unfold Existential. intros. inversion H0. destruct H1. exists x0.
+    split. apply H1. 
+    
+    unfold OPlus in H2. unfold Indicator in H2. unfold post in H2. inversion H2.
+    inversion H3. inversion H4. clear H0 H2 H3 H4. destruct H5. destruct H2.
+    inversion H2. inversion H3. clear H2 H3. destruct H4. destruct H5. subst. 
+    
+    unfold ceval_lifted. simpl. specialize (H x5). inversion H. rewrite <- H0.
+    apply partial_proof_irrelevance.
+Qed.
+
+
+Lemma post_seq : forall (Ex : exec_model_consts) (Ext : exec_model_theory Ex)
+  (C1 C2 : com Ex) (P : assertion Ex),
+  (forall P, rule Ex Ext P C1 (post Ex Ext C1 P)) ->
+  (forall P, rule Ex Ext P C2 (post Ex Ext C2 P)) ->
+  rule Ex Ext P (CSeq Ex C1 C2) (post Ex Ext (CSeq Ex C1 C2) P).
+Proof.
+  intros. specialize (seq_rule Ex Ext P (post Ex Ext C1 P) 
+  (post Ex Ext C2 (post Ex Ext C1 P)) C1 C2). intros.
+  assert (post Ex Ext (CSeq Ex C1 C2) P = (post Ex Ext C2 (post Ex Ext C1 P))).
+    { apply functional_extensionality. intros. unfold post.
+      unfold ceval_lifted. simpl. apply propositional_extensionality. split.
+      + intros. inversion H2. destruct H3. 
+        rewrite <- (bind_composition Ex Ext) in H4. 
+        exists (bind Ex x0 (ceval Ex Ext C1)). split. exists x0.
+        split. apply H3. reflexivity. apply H4.
+      + intros. inversion H2. inversion H3. destruct H4. destruct H4. 
+        exists x1. split. apply H4. rewrite <- (bind_composition Ex Ext).
+        rewrite H6. rewrite useless_lambda with (f := (ceval Ex Ext C2)).
+        apply H3. }
+  rewrite H2. apply H1. apply H. apply H0.
+Qed.
+
+Definition PS := powerset_exec_model.
+Definition PSt := powerset_exec_model_theory.
+
+Lemma PS_bop_union : forall (X Y : Ensemble state) {H},
+  ap (bop PS state) X Y H = Union state X Y.
+Proof. 
+  intros. simpl. reflexivity.
+Qed.
+
+Lemma m1_sub_m : forall (m : M PS state) (b : vexp),
+  Included state (ceval_lifted PS PSt (CAssume PS b) m) m.
+Proof.
+  intros. unfold Included. intros. simpl in H. inversion H as [st [H1 H2]].
+  unfold In in H2. destruct (veval st b).
+  - inversion H2. rewrite <- H0. apply H1.
+  - destruct b0. inversion H2. rewrite <- H0. apply H1. contradiction.
+Qed.
+
+
+Lemma decompose_m : forall (Ex : exec_model_consts) (Ext : exec_model_theory Ex)
+  (b : vexp) (m : M PS state),
+  exists m1 m2 H, ap (bop PS state) m1 m2 H = m /\ 
+    (ceval_lifted PS PSt (CAtom PS (CAssume PS b)) m1) = m1 /\ 
+    (ceval_lifted PS PSt (CAtom PS (CAssume PS b)) m2) = id PS state.
+Proof.
+  intros. remember (ceval_lifted PS PSt (CAtom PS (CAssume PS b)) m) as m1.
+  exists m1. exists (Setminus state m m1). exists I. split.
+  - apply Extensionality_Ensembles. unfold Same_set. split.
+    + unfold Included. intros. inversion H. 
+      * rewrite Heqm1 in H0. unfold ceval_lifted in H0. simpl in H0.
+        inversion H0. destruct H2. destruct (veval x1 b). inversion H3.
+        rewrite <- H4. easy. destruct b0. inversion H3. rewrite <- H4. easy.
+        contradiction.
+      * inversion H0. apply H2.
+    + rewrite PS_bop_union. unfold Included. intros. unfold In. rewrite Heqm1. unfold In.
+      destruct (veval x b) eqn:Heqb.
+      * apply Union_introl. unfold In. simpl. unfold apply_f. exists x. split.
+        easy. rewrite Heqb. apply In_singleton.
+      * destruct b0.
+        -- apply Union_introl. unfold In. simpl. unfold apply_f. exists x. split.
+           easy. rewrite Heqb. apply In_singleton.
+        -- apply Union_intror. unfold In. unfold Setminus. split. easy. 
+           unfold not. unfold In. simpl. unfold apply_f. intros.
+           inversion H0. destruct H1.
+           
+      simpl. Admitted.
+
+
+Lemma post_assume : forall (Ex : exec_model_consts) (Ext: exec_model_theory Ex)
+  (e1 : vexp) (P : assertion Ex),
+  rule Ex Ext P (CAssume Ex e1) (post Ex Ext (CAssume Ex e1) P).
+Proof.
+ intros. 
+ assert (forall m, P m -> (assume_backprop Ex Ext e1 (post Ex Ext (CAssume Ex e1) P)) m).
+  { intros. unfold assume_backprop. unfold post. exists m. split ; easy. }
+ eapply consequence_rule ; intros.
+ - unfold ImpliesOC. apply H.
+ - apply assume_rule.
+ - unfold ImpliesOC. easy.
+Qed.
+
+Lemma assn_indicator_equiv : forall (Ex : exec_model_consts) 
+  (P : assertion Ex),
+  P = (Existential (M Ex state) Ex P (Indicator Ex)).
+Proof.
+  intros. apply functional_extensionality. intros. 
+  apply propositional_extensionality. split.
+  - intros. unfold Existential. exists x. split ; easy.
+  - unfold Existential. intros. inversion H. destruct H0. 
+    unfold Indicator in H1. rewrite <- H1. apply H0.
+Qed.
+
+Lemma compatible_ceval_plus_fun : forall (Ex : exec_model_consts)
+  (Ext : exec_model_theory Ex) (e1 e2 : vexp) (c1 c2 : com Ex)
+  (compat : compatible e1 e2),
+  exists (H : forall st, exec_partial Ex state 
+  (ceval Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e1)) c1) st)
+  (ceval Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e2)) c2) st)),
+  ceval Ex Ext (CPlus Ex e1 e2 c1 c2 compat) = fun st =>
+  ap (bop Ex state) (ceval Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e1)) c1) st)
+  (ceval Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e2)) c2) st) (H st).
+Proof.
+  intros. eexists. apply functional_extensionality. intros. 
+  specialize (compatible_ceval_plus Ex Ext x e1 e2 c1 c2 compat). intros.
+  inversion H. rewrite H0. apply partial_proof_irrelevance. Unshelve.
+
+  intros. unfold compatible in compat. specialize (compat st). destruct compat;
+  simpl ; rewrite H ; apply bop_id_defined ; try apply Ext. 
+  - left. rewrite (preserve_bind2 Ex Ext). reflexivity.
+  - right. rewrite (preserve_bind2 Ex Ext). reflexivity.
+Qed.
+
+Lemma plus_post_existential : forall (Ex : exec_model_consts) 
+  (Ext : exec_model_theory Ex) (C1 C2 : com Ex) (P : assertion Ex) (e1 e2 : vexp)
+  (pf : compatible e1 e2),
+  post Ex Ext (CPlus Ex e1 e2 C1 C2 pf) P =
+  Existential (M Ex state) Ex P (fun t : M Ex state =>
+  OPlus Ex (post Ex Ext <{ (CAssume Ex e1) [;Ex] C1 }> (Indicator Ex t))
+    (post Ex Ext <{ (CAssume Ex e2) [;Ex] C2 }> (Indicator Ex t))).
+Proof.
+  intros. unfold post. apply functional_extensionality. intros. 
+  apply propositional_extensionality. unfold ceval_lifted. 
+  specialize (compatible_ceval_plus_fun Ex Ext e1 e2 C1 C2 pf). intros.
+  inversion H. clear H. rewrite H0. 
+  remember (ceval Ex Ext <{ (CAssume Ex e1) [;Ex] C1 }>) as f.
+  remember (ceval Ex Ext <{ (CAssume Ex e2) [;Ex] C2 }>) as g.
+  split.
+  - intros. inversion H. clear H. destruct H1. unfold Existential. exists x1.
+    split. apply H. unfold OPlus.
+    specialize (preserve_bind3 Ex Ext state state f g x1 x0). intros.
+    inversion H2. clear H2.
+    exists (bind Ex x1 f). exists (bind Ex x1 g). exists x2. rewrite H3.
+    rewrite H1. split. reflexivity. split; exists x1; split ; easy.
+  - intros. unfold Existential in H. inversion H. clear H. destruct H1.
+    unfold OPlus in H1. inversion H1. inversion H2. inversion H3.
+    clear H1 H2 H3. 
+    
+    destruct H4. destruct H2. inversion H2. inversion H3. clear H2 H3.
+    unfold Indicator in *. destruct H4. destruct H5.
+
+    exists x1. split. apply H. rewrite <- H2 in *. rewrite <- H4 in *.
+    specialize (preserve_bind3 Ex Ext state state f g x1 x0). intros.
+    inversion H6. clear H6. rewrite <- H7. subst. 
+    apply partial_proof_irrelevance.
+Qed.
+
+Lemma strongest_postcondition : forall (Ex : exec_model_consts) 
+  (Ext : exec_model_theory Ex) (C : com Ex) (P : assertion Ex),
+  rule Ex Ext P C (post Ex Ext C P).
+Proof.
+  intros.  generalize dependent P. induction C ; 
+  intros. 
+  - admit. 
+  - assert (P = (post Ex Ext (CSkip Ex) P)).
+      { apply functional_extensionality. intros. unfold post. 
+        unfold ceval_lifted. simpl. apply propositional_extensionality. split.
+        - intros. exists x. split. apply H. 
+          rewrite useless_lambda with (f := unit Ex). 
+          rewrite (bind_with_unit Ex Ext). reflexivity.
+        - intros. inversion H. destruct H0. 
+          rewrite useless_lambda with (f := unit Ex) in H1.
+          rewrite (bind_with_unit Ex Ext) in H1. subst. easy. }
+    rewrite <- H. apply one_rule.
+  - apply post_seq ; easy. 
+    (* Here we abstract the Seq case to a Lemma because we also need to use it
+       when proving the (non-total) addition case. *)
+  - remember (fun t => OPlus Ex 
+      (post Ex Ext C1 (Indicator Ex t)) (post Ex Ext C2 (Indicator Ex t))) as Q.
+    specialize (exists_rule Ex Ext (M Ex state) P (Indicator Ex) Q
+      (CPlus_total Ex C1 C2 pf)).
+    intros.
+    assert (forall t : M Ex state,  P t -> 
+      rule Ex Ext (Indicator Ex t) <{ pf -> C1 [+Ex] C2 }> (Q t)).
+      { intros. specialize (plus_rule_total Ex Ext (Indicator Ex t)
+        (post Ex Ext C1 (Indicator Ex t)) (post Ex Ext C2 (Indicator Ex t))
+        C1 C2 pf).
+        intros. subst. apply H1. apply IHC1. apply IHC2. 
+      }
+    apply H in H0.
+    rewrite total_post_existential. rewrite <- HeqQ.
+    rewrite assn_indicator_equiv at 1. apply H0.
+  - specialize (compatible_ceval_plus_fun Ex Ext e1 e2 C1 C2 pf). intros.
+    inversion H. clear H.
+
+    remember (fun t => OPlus Ex 
+    (post Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e1)) C1) (Indicator Ex t)) 
+    (post Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e2)) C2) (Indicator Ex t))) 
+      as Q.
+    specialize (exists_rule Ex Ext (M Ex state) P (Indicator Ex) Q
+      (CPlus Ex e1 e2 C1 C2 pf)).
+    intros. unfold compatible in pf.
+    assert (forall t : M Ex state,  P t -> 
+      rule Ex Ext (Indicator Ex t) (CPlus Ex e1 e2 C1 C2 pf) (Q t)).
+      { intros. specialize (plus_rule Ex Ext e1 e2 C1 C2 pf (Indicator Ex t)
+        (post Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e1)) C1) (Indicator Ex t))
+        (post Ex Ext (CSeq Ex (CAtom Ex (CAssume Ex e2)) C2) (Indicator Ex t))).
+        intros. subst. apply H2 ; apply post_seq ; intros ; try apply post_assume.        
+        apply IHC1. apply IHC2. 
+      } 
+    apply H in H1. clear H. rewrite assn_indicator_equiv at 1.
+    rewrite plus_post_existential. rewrite <- HeqQ. apply H1.
+  - destruct c. 
+    + apply post_assume.
+    + assert 
+      (forall m, P m -> (assn_subst Ex v x (post Ex Ext <{ x [:=Ex] v }> P)) m).
+      { intros. unfold assn_subst. unfold post. exists m. split. apply H.
+        unfold ceval_lifted. reflexivity. }
+      eapply consequence_rule ; intros. unfold ImpliesOC. apply H. 
+      apply assgn_rule. unfold ImpliesOC. trivial. 
+Admitted.
+
+Theorem relative_completeness : forall (Ex : exec_model_consts)
+  (Ext : exec_model_theory Ex) (P Q : assertion Ex) (c : com Ex),
+  outcome_triple Ex Ext P c Q -> rule Ex Ext P c Q.
+Proof.
+  intros. specialize (consequence_rule Ex Ext P P (post Ex Ext c P) Q c).
+  intros. apply H0.
+  - intros. unfold ImpliesOC. easy.
+  - apply strongest_postcondition.
+  - unfold ImpliesOC. intros. unfold post in H1. inversion H1. destruct H2. 
+    unfold outcome_triple in H. rewrite <- H3. apply H. apply H2.
 Qed.
 
 
@@ -191,8 +577,8 @@ Definition pc (Ex : exec_model_consts) (Ext : exec_model_theory Ex)
 (* We will now show that OL, when instantiated using the powerset monad,
    subsumes Hoare Logic *)
 
-Definition PS := powerset_exec_model.
-Definition PSt := powerset_exec_model_theory.
+(* Definition PS := powerset_exec_model.
+Definition PSt := powerset_exec_model_theory. *)
 
 Definition hoare_triple (P : state -> Prop) (c : com PS) (Q : state -> Prop) :=
   forall (st st': state),
@@ -227,6 +613,32 @@ Proof.
     unfold ap in H. easy.
   - unfold In in *. unfold partial_union. unfold make_partial. unfold ap. easy.
 Qed. 
+
+
+(* Lemma forall_states : forall (U : Ensemble state) (x : string), *)
+  
+
+
+(* forall x in U, [assume e](x) = 0 or exists x in U s.t. [assume e](x) =/= 0 *)
+Lemma assume_empty : forall (e : vexp) (U : Ensemble state),
+  Inhabited state U ->
+  (forall x, U x -> ~ (Inhabited state (ceval PS PSt (CAtom PS (CAssume PS e)) x)))
+  \/
+  (exists x, U x /\ Inhabited state ((ceval PS PSt (CAtom PS (CAssume PS e)) x))).
+Proof.
+  intros. inversion H. unfold In in H0. induction e.
+  - destruct v ; simpl.
+    + right. exists x. split. apply H0. econstructor. apply In_singleton.
+    + destruct b. 
+      * admit.
+      * admit.
+  - admit.
+  - simpl. admit.
+  - destruct b. simpl.
+    + admit.
+    + admit.
+    + simpl. 
+Admitted.
 
 
 Lemma assume_inhabited_or_not : forall (e : vexp) (U : Ensemble state),
@@ -436,11 +848,11 @@ Proof.
 Qed.
 
 
-Lemma PS_bop_union : forall (X Y : Ensemble state) {H},
+(* Lemma PS_bop_union : forall (X Y : Ensemble state) {H},
   ap (bop PS state) X Y H = Union state X Y.
 Proof. 
   intros. simpl. reflexivity.
-Qed.
+Qed. *)
 
 
 Lemma apply_f_singleton : forall (st : state) (f : state -> Ensemble state),

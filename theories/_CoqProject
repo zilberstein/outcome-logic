@@ -1,5 +1,6 @@
 -R . project
 ./partial.v
 ./commands.v
-./examples.v
+./powerset.v
 ./assertions_v2.v
+./examples.v
